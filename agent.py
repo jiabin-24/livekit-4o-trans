@@ -1,17 +1,4 @@
-"""
-LiveKit Voice Agent: Cascade Architecture (本地 console 模式)
-
-Pipeline:
-  STT: Azure OpenAI gpt-4o-transcribe
-  LLM: Azure OpenAI (chat completions, e.g. gpt-4o / gpt-4o-mini)
-  TTS: Azure Speech Service
-  VAD: Silero
-
-本地运行:
-  python agent.py console
-
-通过麦克风输入，扬声器输出，无需 LiveKit 服务器。
-"""
+"""LiveKit console voice agent with Azure OpenAI realtime STT."""
 
 import logging
 import os
@@ -19,15 +6,17 @@ import time
 
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
+from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import openai, azure, silero
 
 from azure_speech_sts_from_entra import AzureSpeechStsFromEntraTokenManager
-from gpt4o_transcribe_stream_stt import GPT4oTranscribeStreamSTT
 
 load_dotenv(override=True)
 logger = logging.getLogger("4o-transcribe-agent")
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("azure.identity").setLevel(logging.WARNING)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
 
 AZURE_CREDENTIAL_SCOPE = "https://cognitiveservices.azure.com/.default"
 
@@ -36,7 +25,12 @@ class EntraTokenManager:
     """Manages Entra ID tokens with automatic refresh."""
 
     def __init__(self, scope: str = AZURE_CREDENTIAL_SCOPE):
-        self._credential = DefaultAzureCredential()
+        # Prefer fast local auth chain (Azure CLI) to avoid long IMDS/shared-cache probing delays.
+        self._credential = DefaultAzureCredential(
+            exclude_managed_identity_credential=True,
+            exclude_shared_token_cache_credential=True,
+            exclude_visual_studio_code_credential=True,
+        )
         self._scope = scope
         self._token = None
 
@@ -53,53 +47,62 @@ token_manager = EntraTokenManager()
 speech_sts_token_manager = AzureSpeechStsFromEntraTokenManager(token_manager.get_token)
 
 
+class RefreshingAzureSpeechTTS(azure.TTS):
+    """Refreshes Speech STS token before each synthesize call."""
+
+    def __init__(self, token_provider, **kwargs):
+        self._token_provider = token_provider
+        super().__init__(speech_auth_token=self._token_provider(), **kwargs)
+
+    def synthesize(self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS):
+        self._opts.auth_token = self._token_provider()
+        return super().synthesize(text, conn_options=conn_options)
+
+
 def _use_key_auth() -> bool:
     return bool(os.getenv("AZURE_OPENAI_API_KEY"))
 
 
+def _openai_v1_base_url() -> str:
+    endpoint = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
+    if not endpoint:
+        raise ValueError("AZURE_OPENAI_ENDPOINT is required")
+    return f"{endpoint}/openai/v1"
+
+
 def build_stt():
-    """Azure OpenAI gpt-4o-transcribe STT (Realtime/流式)."""
-    common = dict(
-        model=os.getenv("AZURE_OPENAI_STT_DEPLOYMENT", "gpt-4o-transcribe"),
-        azure_deployment=os.getenv("AZURE_OPENAI_STT_DEPLOYMENT", "gpt-4o-transcribe"),
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
+    """Realtime STT using OpenAI v1 endpoint style, compatible with Foundry speech resources."""
+    model = os.getenv("AZURE_OPENAI_STT_DEPLOYMENT", "gpt-realtime-whisper")
+    base_url = _openai_v1_base_url()
+    api_token = os.getenv("AZURE_OPENAI_API_KEY") if _use_key_auth() else token_manager.get_token()
+
+    logger.info("STT mode: realtime, model=%s, base_url=%s", model, base_url)
+    return openai.STT(
+        model=model,
+        base_url=base_url,
+        api_key=api_token,
         language=os.getenv("STT_LANGUAGE", "zh"),
-    )
-    if _use_key_auth():
-        return GPT4oTranscribeStreamSTT.with_azure(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            **common,
-        )
-    return GPT4oTranscribeStreamSTT.with_azure(
-        azure_ad_token_provider=token_manager.get_token,
-        **common,
-    )
-
-
-def build_speech_stt():
-    """Azure Speech 流式 STT (真正的实时 partial)."""
-    return azure.STT(
-        speech_key=os.getenv("AZURE_SPEECH_KEY"),
-        speech_region=os.getenv("AZURE_SPEECH_REGION"),
-        language=os.getenv("STT_LANGUAGE", "zh-CN"),
+        use_realtime=True,
+        turn_detection={
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 500,
+        },
     )
 
 
 def build_llm():
-    """Azure OpenAI Chat LLM."""
-    common = dict(
-        model=os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT", "gpt-4o-mini"),
-        azure_deployment=os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT", "gpt-4o-mini"),
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
-    )
-    if _use_key_auth():
-        return openai.LLM.with_azure(api_key=os.getenv("AZURE_OPENAI_API_KEY"), **common)
-    return openai.LLM.with_azure(
-        api_key="aad-token-auth-placeholder",
-        azure_ad_token_provider=token_manager.get_token,
-        **common,
+    """LLM on OpenAI v1 endpoint style to match the configured Foundry resource."""
+    model = os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT", "gpt-4o-mini")
+    base_url = _openai_v1_base_url()
+    api_token = os.getenv("AZURE_OPENAI_API_KEY") if _use_key_auth() else token_manager.get_token()
+
+    logger.info("LLM mode: v1, model=%s, base_url=%s", model, base_url)
+    return openai.LLM(
+        model=model,
+        base_url=base_url,
+        api_key=api_token,
     )
 
 
@@ -109,8 +112,8 @@ def build_tts():
     voice = os.getenv("AZURE_TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 
     # Exchange Entra ID token for Speech STS token, then use STS token for Speech auth.
-    return azure.TTS(
-        speech_auth_token=speech_sts_token_manager.get_token(),
+    return RefreshingAzureSpeechTTS(
+        token_provider=speech_sts_token_manager.get_token,
         speech_region=speech_region,
         voice=voice,
     )
@@ -127,7 +130,7 @@ class Assistant(Agent):
         )
 
     async def on_enter(self) -> None:
-        self.session.generate_reply(
+        await self.session.generate_reply(
             instructions="用中文跟用户打招呼，简短地介绍自己是智能客服助手，询问有什么可以帮助的。"
         )
 
@@ -141,6 +144,10 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=build_llm(),
         tts=build_tts(),
     )
+
+    @session.on("error")
+    def _on_session_error(event):
+        logger.exception("[SESSION_ERROR] %s", event.error)
 
     await session.start(agent=Assistant(), room=ctx.room)
 
