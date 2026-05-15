@@ -123,15 +123,15 @@ class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
             instructions=(
-                "你是一个专业的智能客服助手。"
-                "请保持礼貌、简洁、专业。客户说什么语言，客服就要用什么语言回复"
-                "如果用户的问题你无法回答，请礼貌地告知并建议转接人工客服。"
+                "你是智能客服助手。"
+                "回复简洁、礼貌、专业；与用户使用同一语言。"
+                "无法回答时明确说明，并建议转人工。"
             ),
         )
 
     async def on_enter(self) -> None:
         await self.session.generate_reply(
-            instructions="用中文跟用户打招呼，简短地介绍自己是智能客服助手，询问有什么可以帮助的。"
+            instructions="用中文简短问候并询问需要什么帮助。"
         )
 
 
