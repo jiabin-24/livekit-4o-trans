@@ -48,3 +48,5 @@ python agent.py console
 ```powershell
 python agent.py dev
 ```
+
+然后通过 [playground](https://agents-playground.livekit.io/) 在 UI 上对话
