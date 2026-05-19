@@ -12,6 +12,7 @@ from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import openai, azure, silero
 
 from azure_speech_sts_from_entra import AzureSpeechStsFromEntraTokenManager
+from realtime_api_key_azure_stt import RealtimeApiKeyAzureSTT
 
 load_dotenv(override=True)
 logger = logging.getLogger("4o-transcribe-agent")
@@ -90,7 +91,11 @@ class RefreshingAzureSpeechTTS(azure.TTS):
 
 
 def _use_key_auth() -> bool:
-    return bool(os.getenv("AZURE_OPENAI_API_KEY"))
+    return bool((os.getenv("AZURE_OPENAI_API_KEY") or "").strip())
+
+
+def _use_speech_key_auth() -> bool:
+    return bool((os.getenv("AZURE_SPEECH_KEY") or "").strip())
 
 
 def _openai_v1_base_url() -> str:
@@ -107,7 +112,8 @@ def build_stt():
     api_token = os.getenv("AZURE_OPENAI_API_KEY") if _use_key_auth() else token_manager.get_token()
 
     logger.info("STT mode: realtime, model=%s, base_url=%s", model, base_url)
-    return openai.STT(
+    stt_cls = RealtimeApiKeyAzureSTT if _use_key_auth() else openai.STT
+    return stt_cls(
         model=model,
         base_url=base_url,
         api_key=api_token,
@@ -115,9 +121,12 @@ def build_stt():
         use_realtime=True,
         turn_detection={
             "type": "server_vad",
-            "threshold": 0.5,
+            # 语音活动检测阈值：越高越容易判定“已停止说话”，通常会更快结束一轮。
+            "threshold": 0.65,
+            # 在检测到说话开始前，向前补的音频毫秒数，用于避免吞掉开头音节。
             "prefix_padding_ms": 300,
-            "silence_duration_ms": 500,
+            # 静音持续多久才判定 end_of_turn；值越小，结束越快。
+            "silence_duration_ms": 200,
         },
     )
 
@@ -138,8 +147,16 @@ def build_llm():
 
 def build_tts():
     """Azure Speech TTS."""
+    speech_key = os.getenv("AZURE_SPEECH_KEY")
     speech_region = os.getenv("AZURE_SPEECH_REGION")
     voice = os.getenv("AZURE_TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+
+    if _use_speech_key_auth():
+        return azure.TTS(
+            speech_key=speech_key,
+            speech_region=speech_region,
+            voice=voice,
+        )
 
     # Exchange Entra ID token for Speech STS token, then use STS token for Speech auth.
     return RefreshingAzureSpeechTTS(
