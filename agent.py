@@ -91,9 +91,12 @@ def build_stt():
         use_realtime=True,
         turn_detection={
             "type": "server_vad",
-            "threshold": 0.55,
+            # 语音活动检测阈值：越高越容易判定“已停止说话”，通常会更快结束一轮。
+            "threshold": 0.65,
+            # 在检测到说话开始前，向前补的音频毫秒数，用于避免吞掉开头音节。
             "prefix_padding_ms": 300,
-            "silence_duration_ms": 300,
+            # 静音持续多久才判定 end_of_turn；值越小，结束越快。
+            "silence_duration_ms": 200,
         },
     )
 
