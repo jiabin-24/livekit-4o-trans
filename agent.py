@@ -30,25 +30,12 @@ def _fmt_ms(seconds: float | None) -> str:
 
 
 def _emit_turn_metrics(user_metrics: dict[str, Any] | None, assistant_metrics: dict[str, Any]) -> None:
-    end_of_turn = user_metrics.get("end_of_turn_delay") if user_metrics else None
-    turn_cb = user_metrics.get("on_user_turn_completed_delay") if user_metrics else None
-    llm_ttft = assistant_metrics.get("llm_node_ttft")
-    tts_ttfb = assistant_metrics.get("tts_node_ttfb")
-    e2e = assistant_metrics.get("e2e_latency")
-
-    e2e_text = _fmt_ms(e2e)
-    if e2e is None and llm_ttft is not None and tts_ttfb is not None:
-        # Fallback approximation when e2e is absent (usually missing speech stop/start anchors).
-        estimated_e2e = (end_of_turn or 0.0) + llm_ttft + tts_ttfb
-        e2e_text = f"{_fmt_ms(estimated_e2e)}~"
-
     logger.info(
-        "turn_metrics end_of_turn=%s turn_completed_cb=%s llm_ttft=%s tts_ttfb=%s e2e=%s",
-        _fmt_ms(end_of_turn),
-        _fmt_ms(turn_cb),
-        _fmt_ms(llm_ttft),
-        _fmt_ms(tts_ttfb),
-        e2e_text,
+        "turn_metrics end_of_turn=%s llm_ttft=%s tts_ttfb=%s e2e=%s",
+        _fmt_ms(user_metrics.get("end_of_turn_delay") if user_metrics else None),
+        _fmt_ms(assistant_metrics.get("llm_node_ttft")),
+        _fmt_ms(assistant_metrics.get("tts_node_ttfb")),
+        _fmt_ms(assistant_metrics.get("e2e_latency")),
     )
 
 
@@ -197,28 +184,21 @@ async def entrypoint(ctx: JobContext) -> None:
 
     @session.on("conversation_item_added")
     def _on_conversation_item_added(event):
+        if not log_turn_metrics:
+            return
+
         nonlocal last_user_metrics
         item = event.item
-        if getattr(item, "role", None) == "user":
-            last_user_metrics = item.metrics if getattr(item, "metrics", None) else None
+        role = getattr(item, "role", None)
+        metrics = getattr(item, "metrics", None)
+
+        if role == "user":
+            last_user_metrics = metrics if metrics else None
             return
 
-        if not log_turn_metrics:
-            return
-
-        if getattr(item, "role", None) == "assistant" and getattr(item, "metrics", None):
-            _emit_turn_metrics(last_user_metrics, item.metrics)
+        if role == "assistant" and metrics:
+            _emit_turn_metrics(last_user_metrics, metrics)
             last_user_metrics = None
-
-    @session.on("agent_state_changed")
-    def _on_agent_state_changed(_event):
-        if not log_turn_metrics:
-            return
-
-        early_metrics = getattr(session, "_early_assistant_metrics", None)
-        if early_metrics:
-            _emit_turn_metrics(last_user_metrics, early_metrics)
-            session._early_assistant_metrics = None
 
     @session.on("error")
     def _on_session_error(event):
