@@ -1,3 +1,7 @@
-livekit-agents[openai,azure,silero,turn-detector]>=1.5.2
+livekit-agents[openai,azure,silero,turn-detector]==1.5.8
+livekit-plugins-openai==1.5.8
+livekit-plugins-silero==1.5.8
+livekit-plugins-azure==1.5.8
+livekit-plugins-turn-detector==1.5.8
 python-dotenv>=1.0
 azure-identity>=1.17.0
