@@ -108,12 +108,10 @@ def build_stt():
         use_realtime=True,
         turn_detection={
             "type": "server_vad",
-            # 语音活动检测阈值：越高越容易判定“已停止说话”，通常会更快结束一轮。
-            "threshold": 0.65,
-            # 在检测到说话开始前，向前补的音频毫秒数，用于避免吞掉开头音节。
-            "prefix_padding_ms": 300,
-            # 静音持续多久才判定 end_of_turn；值越小，结束越快。
-            "silence_duration_ms": 200,
+            # 中等偏快：在响应速度和完整断句之间做平衡。
+            "threshold": 0.60,
+            "prefix_padding_ms": 100,
+            "silence_duration_ms": 120,
         },
     )
 
@@ -160,12 +158,13 @@ class Assistant(Agent):
                 "你是智能客服助手。"
                 "回复简洁、礼貌、专业；与用户使用同一语言。"
                 "无法回答时明确说明，并建议转人工。"
+                "不要在每句话结尾重复‘还有其他问题吗’；仅在一轮回复结束且确有必要时再询问一次。"
             ),
         )
 
     async def on_enter(self) -> None:
         await self.session.generate_reply(
-            instructions="用中文简短问候并询问需要什么帮助。"
+            instructions="简短问候并询问需要什么帮助。"
         )
 
 
