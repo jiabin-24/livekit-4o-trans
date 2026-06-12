@@ -214,6 +214,6 @@ if __name__ == "__main__":
             # console 模式下不会真正连接 LiveKit server, 但 WorkerOptions 仍需要一个占位 url
             ws_url=os.getenv("LIVEKIT_URL", "ws://localhost:7880"),
             api_key=os.getenv("LIVEKIT_API_KEY", "devkey"),
-            api_secret=os.getenv("LIVEKIT_API_SECRET", "devsecret_at_least_32_chars_long_xx"),
+            api_secret=os.getenv("LIVEKIT_API_SECRET", "secret"),
         )
     )

@@ -1,0 +1,29 @@
+FROM debian:bookworm-slim
+
+ARG LIVEKIT_SERVER_VERSION=1.13.1
+ARG TARGETARCH
+
+WORKDIR /app
+
+# Runtime libraries for downloading/executing livekit-server.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		ca-certificates \
+		curl \
+		tar \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Install livekit-server binary.
+RUN case "${TARGETARCH:-amd64}" in \
+	  amd64) LK_ARCH="amd64" ;; \
+	  arm64) LK_ARCH="arm64" ;; \
+	  *) echo "Unsupported architecture: ${TARGETARCH:-unknown}"; exit 1 ;; \
+	esac \
+	&& curl -fsSL "https://github.com/livekit/livekit/releases/download/v${LIVEKIT_SERVER_VERSION}/livekit_${LIVEKIT_SERVER_VERSION}_linux_${LK_ARCH}.tar.gz" -o /tmp/livekit-server.tgz \
+	&& tar -xzf /tmp/livekit-server.tgz -C /usr/local/bin livekit-server \
+	&& chmod +x /usr/local/bin/livekit-server \
+	&& rm -f /tmp/livekit-server.tgz
+
+EXPOSE 7880 7881
+
+CMD ["sh", "-c", "while true; do livekit-server --dev --bind 0.0.0.0; code=$?; echo \"livekit-server exited with code ${code}, restarting in 2s\"; sleep 2; done"]
